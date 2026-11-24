@@ -37,9 +37,10 @@ empty. Windows that do not fit are minimized, never closed.
    ```
 
 2. Open Hammerspoon and give it the Accessibility permission
-   (System Settings → Privacy & Security → Accessibility). When you save a
-   layout with Finder windows, macOS also asks to let Hammerspoon control
-   Finder (Automation). DeskGrid uses this only to read Finder folder paths.
+   (System Settings → Privacy & Security → Accessibility). When a Finder
+   window is open during a save or load, macOS also asks to let Hammerspoon
+   control Finder (Automation). DeskGrid uses this only to read Finder
+   folder paths.
 
 3. Copy the Spoon into your Hammerspoon folder:
 
@@ -77,6 +78,10 @@ DeskGrid keeps its files in `~/.hammerspoon`, readable only by you:
 
 Saved layouts contain window titles and Finder folder paths. Treat them as
 private. See [SECURITY.md](SECURITY.md).
+
+`~/.hammerspoon` must be a real folder, not a symbolic link. DeskGrid checks
+the owner and permissions of its state folder, and it stops with "Local Undo
+folder is not writable" when the folder is a link.
 
 ## Choose the default layout
 
