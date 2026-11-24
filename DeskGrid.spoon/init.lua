@@ -140,7 +140,9 @@ function obj:applySmartStart()
 end
 
 function obj:saveCurrent()
-  if self._saving then self:_toast("A save is already in progress"); return end
+  if self._saving and hs.timer.secondsSinceEpoch() - self._saving < 30 then
+    self:_toast("A save is already in progress"); return
+  end
   local button, text = hs.dialog.textPrompt("Save Layout", "Name this desk:", "", "Save", "Cancel")
   if button ~= "Save" or not text or text == "" then
     return
@@ -157,7 +159,7 @@ function obj:saveCurrent()
       '"' .. label .. '" has the same name. Replace it with the current windows?', "Replace", "Cancel", "warning")
     if answer ~= "Replace" then return end
   end
-  self._saving = true
+  self._saving = hs.timer.secondsSinceEpoch()
   self:_saveSnapshot(layoutName, true, function(count, saveError)
     self._saving = false
     if not count then
@@ -368,7 +370,7 @@ function obj:_currentFinderPaths(callback)
   for _, info in ipairs(ok and type(list) == "table" and list or {}) do
     if info.kCGWindowOwnerPID == pid and info.kCGWindowLayer == 0 then hasWindow = true; break end
   end
-  if not ok then hasWindow = true end
+  if not ok then callback(nil, "DeskGrid could not list windows."); return end
   if not hasWindow then callback({}); return end
   local script = [[
 set output to ""
@@ -846,7 +848,7 @@ function obj:_createSavedPlan(layoutName)
   for index, spec in ipairs(specs) do
     local bundle = spec.bundle or ""
     if not selected[index] and bundle ~= "com.obsproject.obs-studio" and bundle ~= "com.apple.finder"
-      and bundle ~= "org.python.python" then
+      and bundle ~= "org.python.python" and (spec.title or "") ~= "" then
       selected[index] = self:_takeItem(items, used, bundle, spec.title, false)
     end
   end
@@ -1464,13 +1466,20 @@ function obj:_setupMenu()
   end)
 end
 
+-- True only when lstat reports that the path does not exist. Any other
+-- failure is unknown and must not lead to a new file over an old one.
+function obj:_confirmedMissing(path)
+  local attributes, err = hs.fs.symlinkAttributes(path)
+  return attributes == nil and tostring(err or ""):find("No such file or directory", 1, true) ~= nil
+end
+
 function obj:_ensureStateFiles()
-  if hs.fs.symlinkAttributes(self.layoutsFile) then
+  if not self:_confirmedMissing(self.layoutsFile) then
     self:_setPrivatePermissions(self.layoutsFile)
   else
     self:_saveLayouts({ version = 2, layouts = {} })
   end
-  if hs.fs.symlinkAttributes(self.configFile) then
+  if not self:_confirmedMissing(self.configFile) then
     self:_setPrivatePermissions(self.configFile)
   else
     self:_saveConfig({
@@ -1495,7 +1504,7 @@ end
 function obj:_loadLayouts()
   local f = io.open(self.layoutsFile, "r")
   if not f then
-    if hs.fs.symlinkAttributes(self.layoutsFile) then
+    if not self:_confirmedMissing(self.layoutsFile) then
       return { version = 4, layouts = {}, error = "Saved layouts cannot be read; the existing file was preserved" }
     end
     return { version = 2, layouts = {} }
@@ -1526,7 +1535,7 @@ function obj:_loadConfig()
   }
   local f = io.open(self.configFile, "r")
   if not f then
-    if hs.fs.symlinkAttributes(self.configFile) then
+    if not self:_confirmedMissing(self.configFile) then
       defaults.error = "DeskGrid preferences cannot be read; the existing file was preserved"
     end
     return defaults

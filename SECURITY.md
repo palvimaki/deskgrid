@@ -13,7 +13,8 @@ telemetry, and it never launches or quits apps.
   keyboard tap runs only while you drag with the mouse button held on a
   window, to detect `Esc`. Turn
   drag-to-swap off in the `▦` menu to stop both taps.
-- **Finder:** when a Finder window is on screen during a save, a load or a
+- **Finder:** when a Finder window is open (also minimized or on another
+  Space) during a save, a load or a
   saved-layout preview, DeskGrid asks Finder for the folder paths of its
   windows through Apple Events (`osascript`). macOS asks you for the
   Automation permission first.
