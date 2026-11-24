@@ -85,7 +85,6 @@ function Swap:_begin(point)
   end
   if not source or source.frame.w<160 or source.frame.h<100 then return end
   self.gesture={source=source,items=items,start=point,point=point,screens=self:_screens()}
-  if self.keyTap then self.keyTap:start() end
 end
 
 function Swap:_moved(g)
@@ -265,6 +264,9 @@ function Swap:toggle()
   if not self.owner:_saveConfig(config) then self.owner:_toast("Could not save drag-swap preference"); return end
   self.enabled=config.dragSwapEnabled
   self:_cancel()
+  if self.tap then
+    if self.enabled then self.tap:start() else self.tap:stop() end
+  end
   self.owner:_toast("Drag to swap " .. (self.enabled and "on" or "off"))
 end
 
@@ -287,6 +289,7 @@ function Swap:start()
       elseif kind==types.leftMouseDragged and self.gesture then
         self.gesture.point=event:location()
         self.gesture.dragged=true
+        if self.keyTap and not self.keyTap:isEnabled() then self.keyTap:start() end
         if not self.previewTimer then
           self.previewTimer=hs.timer.doEvery(0.12,function()
             local success,detail=pcall(self._preview,self)
@@ -310,6 +313,7 @@ function Swap:start()
     if not ok then self:_cancel(); print("[DeskGrid drag-swap] " .. tostring(err)) end
     return false
   end):start()
+  if not self.enabled then self.tap:stop() end
   -- macOS can disable an event tap after a timeout. Re-enable the same tap,
   -- discard any stale gesture, and log recovery instead of replaying a drag.
   self.healthTimer=hs.timer.doEvery(15,function()

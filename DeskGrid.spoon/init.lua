@@ -140,6 +140,7 @@ function obj:applySmartStart()
 end
 
 function obj:saveCurrent()
+  if self._saving then self:_toast("A save is already in progress"); return end
   local button, text = hs.dialog.textPrompt("Save Layout", "Name this desk:", "", "Save", "Cancel")
   if button ~= "Save" or not text or text == "" then
     return
@@ -156,7 +157,9 @@ function obj:saveCurrent()
       '"' .. label .. '" has the same name. Replace it with the current windows?', "Replace", "Cancel", "warning")
     if answer ~= "Replace" then return end
   end
+  self._saving = true
   self:_saveSnapshot(layoutName, true, function(count, saveError)
+    self._saving = false
     if not count then
       hs.alert.show("▦ DeskGrid did not save this layout\n" .. saveError, 8)
       return
@@ -356,7 +359,17 @@ function obj:_saveSnapshot(layoutName, includeAllVisible, callback, displayName)
 end
 
 function obj:_currentFinderPaths(callback)
-  if not hs.application.get("com.apple.finder") then callback({}); return end
+  local finder = hs.application.get("com.apple.finder")
+  if not finder then callback({}); return end
+  -- Ask Finder (Automation) only when a Finder window is open.
+  -- The CoreGraphics list is fast and does not wait for a busy Finder.
+  local hasWindow, pid = false, finder:pid()
+  local ok, list = pcall(hs.window.list, true)
+  for _, info in ipairs(ok and type(list) == "table" and list or {}) do
+    if info.kCGWindowOwnerPID == pid and info.kCGWindowLayer == 0 then hasWindow = true; break end
+  end
+  if not ok then hasWindow = true end
+  if not hasWindow then callback({}); return end
   local script = [[
 set output to ""
 with timeout of 8 seconds
@@ -824,7 +837,7 @@ function obj:_createSavedPlan(layoutName)
       if not selected[index] and not self.savedFinderTargets then
         selected[index] = self:_takeTitle(items, used, spec.title, "com.apple.finder")
       end
-    elseif bundle ~= "com.obsproject.obs-studio" then
+    elseif bundle ~= "com.obsproject.obs-studio" and (spec.title or "") ~= "" then
       selected[index] = self:_takeItem(items, used, bundle, spec.title, true)
     end
   end
@@ -926,13 +939,18 @@ end
 function obj:previewDefault()
   local name = self:_loadConfig().defaultLayout
   if name == "smart" then return self:previewSmart() end
-  if type(name) == "string" and self:_loadLayouts().layouts[name] then
+  local saved = type(name) == "string" and self:_loadLayouts().layouts[name] or nil
+  if type(saved) ~= "table" or saved.kind ~= "snapshot" then
+    if name ~= "development" then return self:previewSmart() end
+    return self:_showPreview(self:_createDefaultPlan())
+  end
+  do
     self:_currentFinderPaths(function(paths, err)
       if err then self:_toast(err); return end
       self.savedFinderTargets = paths
       self:_showPreview(self:_createSavedPlan(name))
     end)
-  else self:_showPreview(self:_createDefaultPlan()) end
+  end
 end
 
 function obj:previewSmart()
@@ -1317,7 +1335,11 @@ function obj:_writeText(path, content)
   if hs.fs.symlinkAttributes(path, "mode") then return false end
   local temporary, made = hs.execute("/usr/bin/mktemp " .. self:_shellQuote(path .. ".tmp.XXXXXX"))
   if not made then return false end
-  temporary = tostring(temporary or ""):match("([^\n]+)%s*$") or ""
+  temporary = tostring(temporary or ""):gsub("%s+$", "")
+  local prefix = path .. ".tmp."
+  if temporary:sub(1, #prefix) ~= prefix or #temporary ~= #prefix + 6 or temporary:find("[\r\n]") then
+    return false
+  end
   if temporary == "" or hs.fs.symlinkAttributes(temporary, "mode") == "link" then
     if temporary ~= "" then os.remove(temporary) end
     return false
@@ -1443,16 +1465,12 @@ function obj:_setupMenu()
 end
 
 function obj:_ensureStateFiles()
-  local layoutsHandle = io.open(self.layoutsFile, "r")
-  if layoutsHandle then
-    layoutsHandle:close()
+  if hs.fs.symlinkAttributes(self.layoutsFile) then
     self:_setPrivatePermissions(self.layoutsFile)
   else
     self:_saveLayouts({ version = 2, layouts = {} })
   end
-  local configHandle = io.open(self.configFile, "r")
-  if configHandle then
-    configHandle:close()
+  if hs.fs.symlinkAttributes(self.configFile) then
     self:_setPrivatePermissions(self.configFile)
   else
     self:_saveConfig({
@@ -1476,7 +1494,12 @@ end
 
 function obj:_loadLayouts()
   local f = io.open(self.layoutsFile, "r")
-  if not f then return { version = 2, layouts = {} } end
+  if not f then
+    if hs.fs.symlinkAttributes(self.layoutsFile) then
+      return { version = 4, layouts = {}, error = "Saved layouts cannot be read; the existing file was preserved" }
+    end
+    return { version = 2, layouts = {} }
+  end
   local content = f:read("*a")
   f:close()
   local ok, layouts = pcall(hs.json.decode, content)
@@ -1502,7 +1525,12 @@ function obj:_loadConfig()
     updated_at = self:_now()
   }
   local f = io.open(self.configFile, "r")
-  if not f then return defaults end
+  if not f then
+    if hs.fs.symlinkAttributes(self.configFile) then
+      defaults.error = "DeskGrid preferences cannot be read; the existing file was preserved"
+    end
+    return defaults
+  end
   local content = f:read("*a")
   f:close()
   local ok, config = pcall(hs.json.decode, content)
