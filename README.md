@@ -7,7 +7,11 @@ later, and drag one window onto another to make them exchange places.
 DeskGrid is a [Hammerspoon](https://www.hammerspoon.org/) Spoon written in Lua.
 It is local-first: no account, no network, no telemetry.
 
-<!-- DEMO -->
+![DeskGrid demo: snap to grid, save and load a layout, drag to swap, Undo](docs/demo.gif)
+
+The demo shows, in order: snap to grid (`^⌥⌘1`), save the layout, load it
+back after a mess, drag one window onto another to swap them, and Undo.
+[Watch the MP4 version](docs/demo.mp4).
 
 ## Features
 
