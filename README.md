@@ -11,9 +11,9 @@ It is local-first: no account, no network, no telemetry.
 
 ## Features
 
-- **Snap to grid.** `^⌥⌘0` arranges the open windows into the default grid.
-  `^⌥⌘1` runs the smart layout, which ranks the windows and builds a grid for
-  the current displays.
+- **Snap to grid.** `^⌥⌘1` runs the smart layout. It ranks the open windows
+  and snaps them into a grid that fits the current displays. `^⌥⌘0` applies
+  your default layout (see below).
 - **Save a layout.** `^⌥⌘S` stores the current window positions under a name.
 - **Load a layout.** `^⌥⌘L` opens a picker and puts each window back in its
   saved slot. A layout saved on a different display is scaled to fit.
@@ -37,7 +37,9 @@ empty. Windows that do not fit are minimized, never closed.
    ```
 
 2. Open Hammerspoon and give it the Accessibility permission
-   (System Settings → Privacy & Security → Accessibility).
+   (System Settings → Privacy & Security → Accessibility). When you save a
+   layout with Finder windows, macOS also asks to let Hammerspoon control
+   Finder (Automation). DeskGrid uses this only to read Finder folder paths.
 
 3. Copy the Spoon into your Hammerspoon folder:
 
@@ -57,7 +59,7 @@ The `▦` icon appears in the menu bar.
 
 | Keys    | Action                    |
 |---------|---------------------------|
-| `^⌥⌘0`  | Default grid layout       |
+| `^⌥⌘0`  | Default layout            |
 | `^⌥⌘1`  | Smart layout              |
 | `^⌥⌘S`  | Save the current layout   |
 | `^⌥⌘L`  | Load a saved layout       |
@@ -76,12 +78,20 @@ DeskGrid keeps its files in `~/.hammerspoon`, readable only by you:
 Saved layouts contain window titles and Finder folder paths. Treat them as
 private. See [SECURITY.md](SECURITY.md).
 
-## Customize the default grid
+## Choose the default layout
 
-The default grid is defined in `_createDefaultPlan` in
-`DeskGrid.spoon/init.lua`. Each `slot(...)` line names an app, a column, a
-row and the number of rows in that column. Edit it to fit your own apps, or
-save a layout and set it as the default.
+`^⌥⌘0` uses the `defaultLayout` value in `~/.hammerspoon/deskgrid_config.json`:
+
+- `"smart"` (the first-install value): the smart layout.
+- The name of a saved layout, for example `"focus-desk"`: that layout.
+  The name is the lowercase form that DeskGrid shows after a save.
+- `"development"`: a fixed grid of specific apps, defined in
+  `_createDefaultPlan` in `DeskGrid.spoon/init.lua`. Each `slot(...)` line
+  names an app, a column, a row and the number of rows in that column. Edit
+  it to fit your own apps.
+
+If the named layout does not exist, DeskGrid uses the smart layout. Choose
+**Reload Config** in Hammerspoon after you edit the file.
 
 ## License
 

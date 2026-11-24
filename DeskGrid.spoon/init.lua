@@ -2,7 +2,7 @@ local HOME = os.getenv("HOME")
 local obj = {}
 obj.__index = obj
 obj.name = "DeskGrid"
-obj.version = "4.1"
+obj.version = "4.2"
 obj.author = "DeskGrid contributors"
 obj.license = "MIT"
 obj.homepage = "https://github.com/palvimaki/deskgrid"
@@ -106,11 +106,6 @@ function obj:bindHotkeys(mapping)
       self:firstLaunch()
     end)
   end
-  if mapping.export then
-    self.hotkeys.export = hs.hotkey.bind(mapping.export[1], mapping.export[2], function()
-      self:exportBlueprint()
-    end)
-  end
   if mapping.closeMinimized then
     self.hotkeys.closeMinimized = hs.hotkey.bind(mapping.closeMinimized[1], mapping.closeMinimized[2], function()
       self:closeMinimizedWindows()
@@ -129,10 +124,12 @@ function obj:applyDefault()
   local name = config.defaultLayout
   local saved = type(name) == "string" and layouts.layouts[name] or nil
   if name == "smart" then self:applySmartStart(); return end
-  if saved and saved.kind == "snapshot" then
+  if type(saved) == "table" and saved.kind == "snapshot" then
     self:_applyLayout(name)
     return
   end
+  -- The fixed app grid runs only when chosen; anything else uses smart.
+  if name ~= "development" then self:applySmartStart(); return end
   if not self:_claimRun() then return end
   self:_runFactory(function() return self:_createDefaultPlan() end)
 end
@@ -150,6 +147,15 @@ function obj:saveCurrent()
 
   local layoutName = self:_slug(text)
   if layoutName == "" then self:_toast("Enter a layout name"); return end
+  local existing = self:_loadLayouts()
+  if existing.error then self:_toast(existing.error); return end
+  local prior = existing.layouts[layoutName]
+  if prior ~= nil then
+    local label = type(prior) == "table" and type(prior.displayName) == "string" and prior.displayName or layoutName
+    local answer = hs.dialog.blockAlert("Replace saved layout?",
+      '"' .. label .. '" has the same name. Replace it with the current windows?', "Replace", "Cancel", "warning")
+    if answer ~= "Replace" then return end
+  end
   self:_saveSnapshot(layoutName, true, function(count, saveError)
     if not count then
       hs.alert.show("▦ DeskGrid did not save this layout\n" .. saveError, 8)
@@ -164,9 +170,9 @@ function obj:listAndPick()
   local choices = {}
 
   for name, layout in pairs(layouts.layouts or {}) do
-    if layout.kind == "snapshot" then
+    if type(layout) == "table" and layout.kind == "snapshot" and type(layout.windows) == "table" then
       table.insert(choices, {
-        text = layout.displayName or name,
+        text = type(layout.displayName) == "string" and layout.displayName or name,
         subText = string.format("%d windows, %s", #(layout.windows or {}), layout.saved_at or "unknown date"),
         layoutName = name
       })
@@ -202,39 +208,6 @@ function obj:simulateFirstLaunch()
   }
   self:_saveConfig(config)
   self:firstLaunch()
-end
-
-function obj:exportBlueprint()
-  local path = os.getenv("HOME") .. "/Desktop/DeskGrid-LLM-Blueprint.md"
-  local markdown = self:_blueprintMarkdown()
-  local f = io.open(path, "w")
-  if not f then
-    self:_toast("Could not write blueprint")
-    return
-  end
-  f:write(markdown)
-  f:close()
-  hs.pasteboard.setContents(markdown)
-  self:_toast("Blueprint exported and copied")
-end
-
-function obj:createDesktopShortcut()
-  local path = self:_desktopShortcutPath()
-  local script = table.concat({
-    "#!/bin/zsh",
-    "open -a Hammerspoon",
-    ""
-  }, "\n")
-
-  local f = io.open(path, "w")
-  if not f then
-    self:_toast("Could not create Desktop shortcut")
-    return
-  end
-  f:write(script)
-  f:close()
-  os.execute("/bin/chmod +x " .. self:_shellQuote(path))
-  self:_toast("Desktop shortcut created")
 end
 
 function obj:_candidateWindows()
@@ -350,6 +323,7 @@ function obj:_saveSnapshot(layoutName, includeAllVisible, callback, displayName)
           title = title,
           id = win:id(), pid = app:pid(), processIdentity = self:_processIdentity(app:pid()),
           screenId = win:screen() and win:screen():id(),
+          screenUUID = win:screen() and win:screen():getUUID(),
           screen = win:screen() and self:_plainFrame(win:screen():frame()),
           path = finderPath,
           frame = {
@@ -363,6 +337,7 @@ function obj:_saveSnapshot(layoutName, includeAllVisible, callback, displayName)
     end
   end
 
+  if #layoutWindows == 0 then callback(nil, "No windows to save. Saved layouts were not changed."); return end
   local layouts = self:_loadLayouts()
   if layouts.error then callback(nil, layouts.error); return end
   layouts.layouts[layoutName] = {
@@ -451,7 +426,7 @@ function obj:_applyLayout(layoutName)
   guard(function() self:_currentFinderPaths(guard(function(paths, finderError)
     -- A busy Finder must not stop the layout. Without live paths, Finder
     -- windows are matched by their folder title instead.
-    if finderError then print("[DeskGrid] " .. finderError .. " Matching Finder windows by title.") end
+    if finderError then print("[DeskGrid] Finder paths unavailable; matching Finder windows by title.") end
     self.savedFinderTargets = (not finderError) and paths or nil
     self:_runFactory(function() return self:_createSavedPlan(layoutName) end)
   end)) end)()
@@ -802,7 +777,7 @@ end
 
 function obj:_createSavedPlan(layoutName)
   local layout = self:_loadLayouts().layouts[layoutName]
-  if not layout or layout.kind ~= "snapshot" then
+  if type(layout) ~= "table" or layout.kind ~= "snapshot" then
     return { error = "Layout not found: " .. tostring(layoutName), openRequests = {} }
   end
   local valid, validationError = self:_validateLayout(layout)
@@ -820,10 +795,29 @@ function obj:_createSavedPlan(layoutName)
   local finderTargets = self:_finderTargets()
   local original = layout.screen or { x = 0, y = 0, w = frame.w, h = frame.h }
   local specs, selected = layout.windows or {}, {}
+  local function finderPathOf(spec)
+    return (spec.bundle or "") == "com.apple.finder" and (spec.path or finderPaths[spec.title]) or nil
+  end
+  -- Reserve exact window identities first, so that the title of a closed
+  -- window cannot take a surviving window away from its own saved slot.
   for index, spec in ipairs(specs) do
     local bundle = spec.bundle or ""
-    local finderPath = bundle == "com.apple.finder" and (spec.path or finderPaths[spec.title]) or nil
-    if finderPath then
+    if spec.id and not finderPathOf(spec) and bundle ~= "com.obsproject.obs-studio" then
+      for _, candidate in ipairs(items) do
+        if candidate.id == spec.id and candidate.pid == spec.pid
+            and candidate.processIdentity == spec.processIdentity and candidate.bundle == bundle and not used[candidate.id] then
+          selected[index], used[candidate.id] = candidate, true
+          break
+        end
+      end
+    end
+  end
+  for index, spec in ipairs(specs) do
+    local bundle = spec.bundle or ""
+    local finderPath = finderPathOf(spec)
+    if selected[index] then
+      -- Matched by exact identity above.
+    elseif finderPath then
       selected[index] = self:_takeFinder(items, used, finderTargets, finderPath)
       -- Without live Finder paths (Finder busy), a same-title Finder window
       -- is the best available match for this folder slot.
@@ -831,14 +825,7 @@ function obj:_createSavedPlan(layoutName)
         selected[index] = self:_takeTitle(items, used, spec.title, "com.apple.finder")
       end
     elseif bundle ~= "com.obsproject.obs-studio" then
-      for _, candidate in ipairs(items) do
-        if spec.id and candidate.id == spec.id and candidate.pid == spec.pid
-            and candidate.processIdentity == spec.processIdentity and candidate.bundle == bundle and not used[candidate.id] then
-          selected[index], used[candidate.id] = candidate, true
-          break
-        end
-      end
-      selected[index] = selected[index] or self:_takeItem(items, used, bundle, spec.title, true)
+      selected[index] = self:_takeItem(items, used, bundle, spec.title, true)
     end
   end
   -- Complete all title-based matches before any same-bundle fallback can
@@ -863,9 +850,12 @@ function obj:_createSavedPlan(layoutName)
       local item = selected[index]
       if item then
         local target, source = frame, spec.screen or original
-        if spec.screenId then
-          for _, candidate in ipairs(self:_screens()) do
-            if candidate.id == spec.screenId then target = candidate.frame; break end
+        if spec.screenUUID or spec.screenId then
+          for _, candidate in ipairs(hs.screen.allScreens()) do
+            if (type(spec.screenUUID) == "string" and candidate:getUUID() == spec.screenUUID)
+                or (type(spec.screenUUID) ~= "string" and candidate:id() == spec.screenId) then
+              target = self:_plainFrame(candidate:frame()); break
+            end
           end
         end
         local sx, sy = target.w / source.w, target.h / source.h
@@ -955,12 +945,6 @@ function obj:previewLayout(layoutName)
     self.savedFinderTargets = paths
     self:_showPreview(self:_createSavedPlan(layoutName))
   end)
-end
-
-function obj:_printPlan(plan)
-  local data = self:_serializablePlan(plan)
-  print("[DeskGrid preview]\n" .. hs.json.encode(data, true))
-  return data
 end
 
 function obj:_serializablePlan(plan)
@@ -1075,8 +1059,8 @@ end
 
 function obj:_uid()
   if not self._cachedUid then
-    local output = hs.execute("/usr/bin/id -u", true) or ""
-    self._cachedUid = tonumber(output:match("%d+"))
+    local output = hs.execute("/usr/bin/id -u") or ""
+    self._cachedUid = tonumber(output:match("^%s*(%d+)%s*$"))
   end
   return self._cachedUid or 0
 end
@@ -1292,7 +1276,7 @@ function obj:_processIdentity(pid, fresh)
   local now = hs.timer.secondsSinceEpoch()
   local cached = self._identityCache[numericPID]
   if not fresh and cached and now - cached.at < self.identityCacheSeconds then return cached.value end
-  local output, ok = hs.execute("/bin/ps -p " .. tostring(numericPID) .. " -o lstart=", true)
+  local output, ok = hs.execute("/bin/ps -p " .. tostring(numericPID) .. " -o lstart=")
   local identity = nil
   if ok then
     identity = tostring(output or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -1320,7 +1304,7 @@ function obj:_finishRun(plan, result)
   if (result.skipped or 0)>0 then message=message .. "\n" .. result.skipped .. " windows closed during arrangement" end
   if (result.unresolved or 0)>0 then message=message .. "\n" .. result.unresolved .. " windows did not minimize" end
   if not saved then message=message .. "\nCould not save last-used preference" end
-  print("[DeskGrid] " .. message:gsub("\n", " · ") .. (#(result.empty or {})>0 and (" · empty: " .. table.concat(result.empty, ", ")) or ""))
+  print("[DeskGrid] " .. message:gsub("\n", " · "))
   hs.alert.show("▦ DeskGrid\n" .. message .. "\nUndo is available in the ▦ menu", 5)
 end
 
@@ -1331,9 +1315,9 @@ end
 
 function obj:_writeText(path, content)
   if hs.fs.symlinkAttributes(path, "mode") then return false end
-  local temporary, made = hs.execute("/usr/bin/mktemp " .. self:_shellQuote(path .. ".tmp.XXXXXX"), true)
+  local temporary, made = hs.execute("/usr/bin/mktemp " .. self:_shellQuote(path .. ".tmp.XXXXXX"))
   if not made then return false end
-  temporary = tostring(temporary or ""):gsub("%s+$", "")
+  temporary = tostring(temporary or ""):match("([^\n]+)%s*$") or ""
   if temporary == "" or hs.fs.symlinkAttributes(temporary, "mode") == "link" then
     if temporary ~= "" then os.remove(temporary) end
     return false
@@ -1360,7 +1344,7 @@ function obj:_setPrivatePermissions(path)
   if hs.fs.symlinkAttributes(path, "mode") == "link" then return false end
   local kind = hs.fs.attributes(path, "mode")
   local mode = kind == "directory" and "700" or "600"
-  local _, ok = hs.execute("/bin/chmod -h " .. mode .. " " .. self:_shellQuote(path), true)
+  local _, ok = hs.execute("/bin/chmod -h " .. mode .. " " .. self:_shellQuote(path))
   if ok ~= true then return false end
   local attributes = hs.fs.symlinkAttributes(path)
   local expected = kind == "directory" and "rwx------" or "rw-------"
@@ -1434,7 +1418,8 @@ function obj:_setupMenu()
   self.menubar:setMenu(function()
     local name=self:_loadConfig().defaultLayout
     local layout=self:_loadLayouts().layouts[name]
-    local label=layout and (layout.displayName or name) or (name=="smart" and "Smart layout" or "Development layout")
+    if type(layout)~="table" then layout=nil end
+    local label=layout and (type(layout.displayName)=="string" and layout.displayName or name) or (name=="development" and "Development layout" or "Smart layout")
     return {
       {title="Default: " .. label .. "    ^⌥⌘0",fn=function()self:applyDefault()end},
       {title="Smart layout    ^⌥⌘1",fn=function()self:applySmartStart()end},
@@ -1551,10 +1536,6 @@ function obj:_shellQuote(text)
   return "'" .. tostring(text):gsub("'", "'\\''") .. "'"
 end
 
-function obj:_desktopShortcutPath()
-  return os.getenv("HOME") .. "/Desktop/Launch DeskGrid.command"
-end
-
 function obj:_now()
   return os.date("!%Y-%m-%dT%H:%M:%SZ")
 end
@@ -1564,7 +1545,7 @@ function obj:_toast(message)
 end
 
 function obj:_shortcutText()
-  return table.concat({"^⌥⌘0  Default development layout", "^⌥⌘1  Smart layout",
+  return table.concat({"^⌥⌘0  Default layout", "^⌥⌘1  Smart layout",
     "^⌥⌘S  Save current layout", "^⌥⌘L  Load a saved layout",
     "Drag a window onto another to swap their positions and sizes.",
     "Hold Option while dragging to bypass swapping.",
@@ -1574,20 +1555,6 @@ end
 
 function obj:_showShortcutHint()
   hs.alert.show("▦ DeskGrid\n" .. self:_shortcutText(), 5)
-end
-
-function obj:_blueprintMarkdown()
-  return [[# DeskGrid 4
-
-Four actions: default, smart, save, load. Static local Lua only.
-Smart planning is a pure module. Preview is visible and does not apply changes.
-Layout stores an identity-bound Undo checkpoint before moving windows.
-Overflow is minimized, never closed. Apps and processes stay running.
-DeskGrid never launches apps. A slot without an open window stays empty.
-One window that refuses its frame does not undo the other windows.
-Undo restores matching live windows only, including size and minimized state.
-Snapshot and saved-layout data are JSON, never executable code.
-]]
 end
 
 function obj:_plainFrame(f)

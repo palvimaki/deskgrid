@@ -1,5 +1,6 @@
 -- DeskGrid: swap two existing layout slots by dragging a window onto another.
--- Observe mouse events only; normal clicks, text drags and resizes pass through.
+-- Observe mouse events. Keys are observed only during a drag, to catch Esc.
+-- Normal clicks, text drags and resizes pass through.
 local M = {}
 local Swap = {}
 Swap.__index = Swap
@@ -42,6 +43,7 @@ end
 
 function Swap:_cancel()
   self.gesture=nil
+  if self.keyTap then self.keyTap:stop() end
   if self.previewTimer then self.previewTimer:stop(); self.previewTimer=nil end
   self:_clearPreview()
 end
@@ -83,6 +85,7 @@ function Swap:_begin(point)
   end
   if not source or source.frame.w<160 or source.frame.h<100 then return end
   self.gesture={source=source,items=items,start=point,point=point,screens=self:_screens()}
+  if self.keyTap then self.keyTap:start() end
 end
 
 function Swap:_moved(g)
@@ -213,7 +216,7 @@ function Swap:_drop(point, bypass, capturedGesture)
     undo.windows[i]={id=item.id,pid=item.pid,bundle=item.bundle,
       processIdentity=item.processIdentity,frame=item.frame}
   end
-  if not self.owner:_writeAtomicJSON(self.undoPath,undo) then
+  if not self.owner:_ensureUndoDirectory() or not self.owner:_writeAtomicJSON(self.undoPath,undo) then
     self.owner:_toast("Could not save swap Undo; no swap performed"); return
   end
   local original={pair[1].frame,pair[2].frame}
@@ -222,7 +225,14 @@ end
 
 function Swap:undo()
   if self.busy or self.owner.activeRun then return end
-  local undo=hs.json.read(self.undoPath)
+  -- Read only a private regular file that this user owns.
+  local attr=hs.fs.symlinkAttributes(self.undoPath)
+  local undo=nil
+  if self.owner:_ensureUndoDirectory() and attr and attr.mode=="file"
+      and attr.uid==self.owner:_uid() and attr.permissions=="rw-------" then
+    local ok,decoded=pcall(hs.json.read,self.undoPath)
+    if ok then undo=decoded end
+  end
   if type(undo)~="table" or undo.schema_version~=1 or type(undo.windows)~="table"
       or #undo.windows~=2 or undo.screens~=self:_screens() then
     self.owner:_toast("No matching window swap to undo"); return
@@ -263,13 +273,14 @@ function Swap:start()
   local config=self.owner:_loadConfig()
   self.enabled=not config.error and config.dragSwapEnabled~=false
   local types=hs.eventtap.event.types
-  self.tap=hs.eventtap.new({types.leftMouseDown,types.leftMouseDragged,types.leftMouseUp,types.keyDown},function(event)
+  -- Esc cancels a drag. This tap runs only while a drag gesture is active.
+  self.keyTap=hs.eventtap.new({types.keyDown},function(event)
+    if self.gesture and event:getKeyCode()==53 then self.gesture.cancelled=true; self:_clearPreview() end
+    return false
+  end)
+  self.tap=hs.eventtap.new({types.leftMouseDown,types.leftMouseDragged,types.leftMouseUp},function(event)
     local ok,err=pcall(function()
       local kind=event:getType()
-      if kind==types.keyDown then
-        if self.gesture and event:getKeyCode()==53 then self.gesture.cancelled=true; self:_clearPreview() end
-        return
-      end
       if kind==types.leftMouseDown then
         self:_cancel()
         if not event:getFlags().alt then self:_begin(event:location()) end
@@ -314,6 +325,7 @@ end
 function Swap:stop()
   self:_cancel()
   if self.tap then self.tap:stop(); self.tap=nil end
+  if self.keyTap then self.keyTap:stop(); self.keyTap=nil end
   if self.healthTimer then self.healthTimer:stop(); self.healthTimer=nil end
 end
 
